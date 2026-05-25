@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>视频提取器 - Video Extractor</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
+  <!--
+    修复：注册 Service Worker 以注入 COOP/COEP 响应头
+    解决 FFmpeg WASM SharedArrayBuffer 不可用导致音频提取卡在 0% 的问题
+  -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw-coop-coep.js').then(function(registration) {
+        console.log('[修复] Service Worker 已注册');
+        if (registration.active && !crossOriginIsolated) {
+          console.log('[修复] 尚未跨域隔离，1秒后重载页面...');
+          setTimeout(function() { window.location.reload(); }, 1000);
+        } else if (crossOriginIsolated) {
+          console.log('[修复] 已处于跨域隔离状态 ✓');
+        }
+        registration.addEventListener('updatefound', function() {
+          var newWorker = registration.installing;
+          newWorker.addEventListener('statechange', function() {
+            if (newWorker.state === 'activated' && !crossOriginIsolated) {
+              setTimeout(function() { window.location.reload(); }, 1000);
+            }
+          });
+        });
+      }).catch(function(error) {
+        console.error('[修复] Service Worker 注册失败:', error);
+      });
+    } else {
+      console.warn('[修复] 当前浏览器不支持 Service Worker，FFmpeg 可能无法正常工作');
+    }
+  </script>
+  <script type="module" crossorigin src="./assets/index-xej_m3Mx.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-SuI870gN.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部导航 -->
+    <header class="header">
+      <div class="header-inner">
+        <div class="logo">
+          <span class="logo-icon">🎬</span>
+          <h1>视频提取器</h1>
+        </div>
+        <div class="header-actions">
+          <button id="btn-settings" class="btn btn-icon" title="设置">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- 步骤1：视频导入 -->
+      <section id="step-import" class="step active">
+        <div class="step-header">
+          <span class="step-number">1</span>
+          <h2>导入视频</h2>
+        </div>
+        <div class="upload-area" id="upload-area">
+          <div class="upload-content">
+            <div class="upload-icon">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <p class="upload-title">拖拽视频文件到此处</p>
+            <p class="upload-subtitle">或点击选择文件</p>
+            <p class="upload-formats">支持 MP4, AVI, MOV, MKV, WebM, FLV 等格式</p>
+          </div>
+          <input type="file" id="file-input" accept="video/*" hidden />
+        </div>
+
+        <!-- 视频预览 -->
+        <div id="video-preview" class="video-preview hidden">
+          <div class="video-info">
+            <div class="video-thumbnail">
+              <video id="preview-video" controls></video>
+            </div>
+            <div class="video-details">
+              <h3 id="video-name">-</h3>
+              <div class="detail-grid">
+                <div class="detail-item">
+                  <span class="detail-label">大小</span>
+                  <span class="detail-value" id="video-size">-</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">时长</span>
+                  <span class="detail-value" id="video-duration">-</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">格式</span>
+                  <span class="detail-value" id="video-format">-</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">分辨率</span>
+                  <span class="detail-value" id="video-resolution">-</span>
+                </div>
+              </div>
+              <button id="btn-change-video" class="btn btn-secondary btn-sm">更换视频</button>
+            </div>
+          </div>
+          <div class="step-actions">
+            <button id="btn-next-step" class="btn btn-primary btn-lg">
+              下一步：选择提取内容
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 步骤2：选择提取内容 -->
+      <section id="step-extract" class="step">
+        <div class="step-header">
+          <button id="btn-back-import" class="btn btn-ghost btn-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+            返回
+          </button>
+          <span class="step-number">2</span>
+          <h2>选择提取内容</h2>
+        </div>
+
+        <div class="extract-options">
+          <!-- 音频提取 -->
+          <div class="option-card" id="option-audio">
+            <div class="option-header">
+              <div class="option-icon audio-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+              </div>
+              <div>
+                <h3>提取音频</h3>
+                <p>从视频中分离音频轨道</p>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-audio" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="option-body" id="audio-options">
+              <div class="form-group">
+                <label>输出格式</label>
+                <div class="format-selector">
+                  <label class="format-option">
+                    <input type="radio" name="audio-format" value="mp3" checked />
+                    <span class="format-btn">MP3</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="audio-format" value="wav" />
+                    <span class="format-btn">WAV</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="audio-format" value="aac" />
+                    <span class="format-btn">AAC</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>音频质量</label>
+                <select id="audio-quality" class="select">
+                  <option value="128">128 kbps（标准）</option>
+                  <option value="192" selected>192 kbps（较高）</option>
+                  <option value="256">256 kbps（高）</option>
+                  <option value="320">320 kbps（最高）</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- 字幕截图 -->
+          <div class="option-card" id="option-frames">
+            <div class="option-header">
+              <div class="option-icon frame-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              </div>
+              <div>
+                <h3>提取字幕截图</h3>
+                <p>提取视频帧画面为图片</p>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-frames" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="option-body" id="frames-options">
+              <div class="form-group">
+                <label>提取模式</label>
+                <div class="format-selector">
+                  <label class="format-option">
+                    <input type="radio" name="frame-mode" value="interval" checked />
+                    <span class="format-btn">按间隔</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="frame-mode" value="count" />
+                    <span class="format-btn">按数量</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group" id="frame-interval-group">
+                <label>提取间隔（秒）</label>
+                <input type="number" id="frame-interval" class="input" value="5" min="1" max="60" />
+              </div>
+              <div class="form-group hidden" id="frame-count-group">
+                <label>提取帧数</label>
+                <input type="number" id="frame-count" class="input" value="20" min="1" max="500" />
+              </div>
+              <div class="form-group">
+                <label>图片格式</label>
+                <div class="format-selector">
+                  <label class="format-option">
+                    <input type="radio" name="frame-format" value="png" checked />
+                    <span class="format-btn">PNG</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="frame-format" value="jpeg" />
+                    <span class="format-btn">JPEG</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="frame-format" value="webp" />
+                    <span class="format-btn">WebP</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>图片质量</label>
+                <select id="frame-quality" class="select">
+                  <option value="0.6">60%（较小文件）</option>
+                  <option value="0.8" selected>80%（平衡）</option>
+                  <option value="0.9">90%（高质量）</option>
+                  <option value="1.0">100%（最高质量）</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- 语音识别字幕 -->
+          <div class="option-card" id="option-stt">
+            <div class="option-header">
+              <div class="option-icon stt-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </div>
+              <div>
+                <h3>语音识别生成字幕</h3>
+                <p>AI自动识别语音生成文本字幕</p>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="toggle-stt" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="option-body" id="stt-options">
+              <div class="form-group">
+                <label>识别引擎</label>
+                <div class="format-selector">
+                  <label class="format-option">
+                    <input type="radio" name="stt-engine" value="whisper" checked />
+                    <span class="format-btn">Whisper AI</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="stt-engine" value="browser" />
+                    <span class="format-btn">浏览器原生</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group" id="whisper-model-group">
+                <label>Whisper 模型</label>
+                <select id="whisper-model" class="select">
+                  <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
+                  <option value="Xenova/whisper-base" selected>Base（平衡，~150MB）</option>
+                  <option value="Xenova/whisper-small">Small（更准，~500MB）</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>识别语言</label>
+                <select id="stt-language" class="select">
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                  <option value="ja">日本語</option>
+                  <option value="ko">한국어</option>
+                  <option value="auto">自动检测</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>字幕格式</label>
+                <div class="format-selector">
+                  <label class="format-option">
+                    <input type="radio" name="subtitle-format" value="srt" checked />
+                    <span class="format-btn">SRT</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="subtitle-format" value="vtt" />
+                    <span class="format-btn">WebVTT</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="subtitle-format" value="ass" />
+                    <span class="format-btn">ASS</span>
+                  </label>
+                  <label class="format-option">
+                    <input type="radio" name="subtitle-format" value="txt" />
+                    <span class="format-btn">TXT</span>
+                  </label>
+                </div>
+              </div>
+              <div class="info-box" id="whisper-info">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <span>Whisper AI 首次使用需下载模型文件，请耐心等待。推荐使用 Chrome/Edge 浏览器以获得最佳性能。</span>
+              </div>
+              <div class="info-box hidden" id="browser-stt-info">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <span>浏览器原生语音识别无需下载模型，但准确率较低，且仅支持 Chrome 浏览器。</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-actions">
+          <button id="btn-start-extract" class="btn btn-primary btn-lg" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            开始提取
+          </button>
+        </div>
+      </section>
+
+      <!-- 步骤3：提取进度 -->
+      <section id="step-progress" class="step">
+        <div class="step-header">
+          <span class="step-number">3</span>
+          <h2>提取中</h2>
+        </div>
+
+        <div class="progress-container">
+          <!-- 总进度 -->
+          <div class="progress-total">
+            <div class="progress-bar">
+              <div class="progress-fill" id="total-progress-fill"></div>
+            </div>
+            <span class="progress-text" id="total-progress-text">准备中...</span>
+          </div>
+
+          <!-- 各任务进度 -->
+          <div class="task-list" id="task-list">
+            <!-- 动态生成 -->
+          </div>
+        </div>
+
+        <div class="step-actions">
+          <button id="btn-cancel" class="btn btn-danger">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            取消
+          </button>
+        </div>
+      </section>
+
+      <!-- 步骤4：完成 -->
+      <section id="step-complete" class="step">
+        <div class="step-header">
+          <span class="step-number">✓</span>
+          <h2>提取完成</h2>
+        </div>
+
+        <div class="results-container" id="results-container">
+          <!-- 动态生成 -->
+        </div>
+
+        <div class="step-actions">
+          <button id="btn-download-all" class="btn btn-primary btn-lg">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            全部下载
+          </button>
+          <button id="btn-restart" class="btn btn-secondary btn-lg">
+            处理新视频
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- 设置面板 -->
+    <div id="settings-panel" class="settings-panel hidden">
+      <div class="settings-overlay"></div>
+      <div class="settings-content">
+        <div class="settings-header">
+          <h3>设置</h3>
+          <button id="btn-close-settings" class="btn btn-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="settings-body">
+          <div class="form-group">
+            <label>FFmpeg 加载方式</label>
+            <select id="ffmpeg-source" class="select">
+              <option value="cdn">CDN（推荐，需联网）</option>
+              <option value="local">本地文件</option>
+            </select>
+          </div>
+          <div class="form-group hidden" id="local-ffmpeg-group">
+            <label>FFmpeg Core 文件路径</label>
+            <input type="text" id="ffmpeg-core-path" class="input" placeholder="ffmpeg-core.js 文件路径" />
+          </div>
+          <div class="form-group">
+            <label>Whisper 模型缓存</label>
+            <div class="cache-info">
+              <span id="cache-status">未加载</span>
+              <button id="btn-clear-cache" class="btn btn-sm btn-secondary">清除缓存</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+</body>
+</html>
