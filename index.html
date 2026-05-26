@@ -11,28 +11,28 @@
   -->
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw-coop-coep.js').then(function(registration) {
-        console.log('[修复] Service Worker 已注册');
-        if (registration.active && !crossOriginIsolated) {
-          console.log('[修复] 尚未跨域隔离，1秒后重载页面...');
-          setTimeout(function() { window.location.reload(); }, 1000);
-        } else if (crossOriginIsolated) {
-          console.log('[修复] 已处于跨域隔离状态 ✓');
-        }
-        registration.addEventListener('updatefound', function() {
-          var newWorker = registration.installing;
-          newWorker.addEventListener('statechange', function() {
-            if (newWorker.state === 'activated' && !crossOriginIsolated) {
-              setTimeout(function() { window.location.reload(); }, 1000);
+      (function() {
+        var RELOAD_KEY = 'sw-reloaded';
+        var reloadCount = parseInt(sessionStorage.getItem(RELOAD_KEY) || '0');
+        if (crossOriginIsolated) { console.log('[COOP/COEP] 已隔离 ✓'); return; }
+        if (reloadCount >= 2) { console.warn('[COOP/COEP] 已达最大重载次数'); return; }
+        navigator.serviceWorker.register('./sw-coop-coep.js').then(function(reg) {
+          console.log('[COOP/COEP] SW 已注册');
+          function doReload() {
+            if (!crossOriginIsolated) {
+              sessionStorage.setItem(RELOAD_KEY, String(reloadCount + 1));
+              setTimeout(function() { window.location.reload(); }, (reloadCount + 1) * 1000);
             }
+          }
+          if (reg.active) { doReload(); }
+          reg.addEventListener('updatefound', function() {
+            reg.installing.addEventListener('statechange', function() {
+              if (this.state === 'activated') { doReload(); }
+            });
           });
-        });
-      }).catch(function(error) {
-        console.error('[修复] Service Worker 注册失败:', error);
-      });
-    } else {
-      console.warn('[修复] 当前浏览器不支持 Service Worker，FFmpeg 可能无法正常工作');
-    }
+        }).catch(function(e) { console.error('[COOP/COEP] SW 注册失败:', e); });
+      })();
+    } else { console.warn('[COOP/COEP] 浏览器不支持 SW'); }
   </script>
   <script type="module" crossorigin src="./assets/index-xej_m3Mx.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-SuI870gN.css">
